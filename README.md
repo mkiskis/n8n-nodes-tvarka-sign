@@ -1,262 +1,80 @@
-![Banner image](https://user-images.githubusercontent.com/10284570/173569848-c624317f-42b1-45a6-ab09-f0ea3c247648.png)
+# n8n-nodes-tvarka-sign
 
-# n8n-nodes-starter
+Connect [TVARKA Sign](https://tvarka.pro) to your document and CRM workflows in [n8n](https://n8n.io).
 
-This starter repository helps you build custom integrations for [n8n](https://n8n.io). It includes example nodes, credentials, the node linter, and all the tooling you need to get started.
+Upload a document, request qualified electronic signatures, follow progress, and download the result. The signer completes the TVARKA ceremony using their own supported electronic identity. Creating a request does not itself sign a document.
 
-## Quick Start
+## Installation
 
-> [!TIP]
-> **New to building n8n nodes?** The fastest way to get started is with `npm create @n8n/node`. This command scaffolds a complete node package for you using the [@n8n/node-cli](https://www.npmjs.com/package/@n8n/node-cli).
+On self-hosted n8n, install `n8n-nodes-tvarka-sign` through **Settings → Community Nodes**. Follow the [n8n community-node installation guide](https://docs.n8n.io/integrations/community-nodes/installation/).
 
-**To create a new node package from scratch:**
+n8n Cloud installation requires n8n verification of this package. Publishing on npm does not mean the package is verified or available in Cloud.
 
-```bash
-npm create @n8n/node
-```
+## Credentials
 
-**Already using this starter? Start developing with:**
+1. Sign in to [TVARKA Sign](https://sign.tvarka.pro/), select your company and open **Settings → API key**.
+2. Create a **TVARKA Sign API** credential in n8n and enter your key. Keys are sent as bearer tokens only to `https://sign-api.tvarka.pro`.
+3. Use **Test credential** to perform a read-only signing-list request.
 
-```bash
-npm run dev
-```
+Production keys start with `tsk_live_`. Existing `tsk_test_` keys use the same API host and select the sandbox. Due Diligence and ATK credentials are separate and cannot be used here. See [API access guidance](https://sign-api.tvarka.pro/docs#keys).
 
-This starts n8n with your nodes loaded and hot reload enabled.
+The node requires an active TVARKA Sign workspace and the API access of the named user. Production signatures are billed by TVARKA under the workspace's pricing; n8n charges are separate.
 
-## What's Included
+## Operations
 
-This starter repository includes two example nodes to learn from:
+| Resource | Operation | Result |
+| --- | --- | --- |
+| File | Upload | Upload binary data, up to 100 MB, and receive a reusable `fileToken` |
+| Signing | Create Signing | Request signatures and receive status and ceremony links |
+| Signing | Get Signing | Read current status and signer details |
+| Signing | Get Many | Retrieve signing requests, optionally filtered by status, with cursor pagination |
+| Signing | Download Document | Return the latest available document as n8n binary data |
+| Signing | Cancel Signing | Retract unused invitations; collected signatures remain intact |
+| Signing | Remind Signer | Ask TVARKA to send a reminder to an existing signer |
 
-- **[Example Node](nodes/Example/)** - A simple starter node that shows the basic structure with a custom `execute` method
-- **[GitHub Issues Node](nodes/GithubIssues/)** - A complete, production-ready example built using the **declarative style**:
-  - **Low-code approach** - Define operations declaratively without writing request logic
-  - Multiple resources (Issues, Comments)
-  - Multiple operations (Get, Get All, Create)
-  - Two authentication methods (OAuth2 and Personal Access Token)
-  - List search functionality for dynamic dropdowns
-  - Proper error handling and typing
-  - Ideal for HTTP API-based integrations
+## First workflow
 
-> [!TIP]
-> The declarative/low-code style (used in GitHub Issues) is the recommended approach for building nodes that interact with HTTP APIs. It significantly reduces boilerplate code and handles requests automatically.
+1. Obtain a file from your storage, CRM or another n8n node as binary data. Keep its filename extension.
+2. Add **TVARKA Sign → File → Upload**, using the binary field `data` (or your source field).
+3. Add **Signing → Create Signing**. Map the returned `fileToken`, provide the document filename, title and one or more signer emails.
+4. Supply a stable **Idempotency Key**, such as `contract:123:revision:2`. Use the same key and identical request when retrying an uncertain outcome. A changed document or signer list requires a new business request key.
+5. Choose **Return Ceremony Links** to distribute links yourself, or **Email Invitations** to have TVARKA send invitations. This is an explicit choice; the default returns links.
+6. Poll **Get Signing** with a Wait node. Download when `status` is `completed`. Stop for `declined`, `cancelled`, `expired` or `failed`.
+7. Connect **Download Document** to your storage or CRM node. Its binary output defaults to `data`; JSON also contains `signingId`, `fileName`, `sha256` and `sandbox`.
 
-Browse these examples to understand both approaches, then modify them or create your own.
+The included [example workflow](examples/request-and-download.json) demonstrates steps 3–6 using an already-uploaded file token. Import it, choose your credentials, and replace all example input values before executing. It uses email invitations explicitly, polls every five minutes while the order is pending, and stops on other terminal outcomes. Connect the binary output to your preferred storage provider. Long-running polling consumes n8n executions according to your plan.
 
-## Finding Inspiration
+A download can be available after only one participant signs. Always check for `completed` if your business process requires every signature. Sandbox downloads are marked `sandbox: true` and must not be treated as signed production documents.
 
-Looking for more examples? Check out these resources:
+## Supported documents and limits
 
-- **[npm Community Nodes](https://www.npmjs.com/search?q=keywords:n8n-community-node-package)** - Browse thousands of community-built nodes on npm using the `n8n-community-node-package` tag
-- **[n8n Built-in Nodes](https://github.com/n8n-io/n8n/tree/master/packages/nodes-base/nodes)** - Study the source code of n8n's official nodes for production-ready patterns and best practices
-- **[n8n Credentials](https://github.com/n8n-io/n8n/tree/master/packages/nodes-base/credentials)** - See how authentication is implemented for various services
+- PDF documents; appendable ASiC-E (`.asice`, `.sce`, `.bdoc`) and already-signed ADOC-family containers (`.adoc`, `.bedoc`, `.cedoc`, `.gedoc`, `.ggedoc`) for countersigning.
+- Multipart upload supports 100,000,000 bytes. Reusable uploads expire after seven days. Each signing receives its own copy.
+- One to twenty signers; parallel or sequential order; expiry from 1 to 30 days.
+- Signing methods and workspace entitlements are enforced by TVARKA. This initial connector uses hosted ceremonies; it does not initiate headless phone signatures.
+- Server-side validation remains authoritative. Keep n8n execution access and retention appropriate for documents and private ceremony links.
 
-These are excellent resources to understand how to structure your nodes, handle different API patterns, and implement advanced features.
+## Errors and retries
 
-## Prerequisites
+API failures appear as node errors. n8n's Continue On Fail option returns an error item and preserves input pairing. The connector does not silently retry mutations or follow redirects. For rate limits or temporary API failures, use a bounded retry policy; preserve the create idempotency key. Upload retries can create another temporary file, so keep the returned token once received.
 
-Before you begin, install the following on your development machine:
+## Development
 
-### Required
+Requires Node.js 24 and npm.
 
-- **[Node.js](https://nodejs.org/)** (v22 or higher) and npm
-  - Linux/Mac/WSL: Install via [nvm](https://github.com/nvm-sh/nvm)
-  - Windows: Follow [Microsoft's NodeJS guide](https://learn.microsoft.com/en-us/windows/dev-environment/javascript/nodejs-on-windows)
-- **[git](https://git-scm.com/downloads)**
-
-### Recommended
-
-- Follow n8n's [development environment setup guide](https://docs.n8n.io/integrations/creating-nodes/build/node-development-environment/)
-
-> [!NOTE]
-> The `@n8n/node-cli` is included as a dev dependency and will be installed automatically when you run `npm install`. The CLI includes n8n for local development, so you don't need to install n8n globally.
-
-## Getting Started with this Starter
-
-Follow these steps to create your own n8n community node package:
-
-### 1. Create Your Repository
-
-[Generate a new repository](https://github.com/n8n-io/n8n-nodes-starter/generate) from this template, then clone it:
-
-```bash
-git clone https://github.com/<your-organization>/<your-repo-name>.git
-cd <your-repo-name>
-```
-
-### 2. Install Dependencies
-
-```bash
-npm install
-```
-
-This installs all required dependencies including the `@n8n/node-cli`.
-
-### 3. Explore the Examples
-
-Browse the example nodes in [nodes/](nodes/) and [credentials/](credentials/) to understand the structure:
-
-- Start with [nodes/Example/](nodes/Example/) for a basic node
-- Study [nodes/GithubIssues/](nodes/GithubIssues/) for a real-world implementation
-
-### 4. Build Your Node
-
-Edit the example nodes to fit your use case, or create new node files by copying the structure from [nodes/Example/](nodes/Example/).
-
-> [!TIP]
-> If you want to scaffold a completely new node package, use `npm create @n8n/node` to start fresh with the CLI's interactive generator.
-
-### 5. Configure Your Package
-
-Update `package.json` with your details:
-
-- `name` - Your package name (must start with `n8n-nodes-`)
-- `author` - Your name and email
-- `repository` - Your repository URL
-- `description` - What your node does
-
-Make sure your node is registered in the `n8n.nodes` array.
-
-### 6. Develop and Test Locally
-
-Start n8n with your node loaded:
-
-```bash
-npm run dev
-```
-
-This command runs `n8n-node dev` which:
-
-- Builds your node with watch mode
-- Starts n8n with your node available
-- Automatically rebuilds when you make changes
-- Opens n8n in your browser (usually http://localhost:5678)
-
-You can now test your node in n8n workflows!
-
-> [!NOTE]
-> Learn more about CLI commands in the [@n8n/node-cli documentation](https://www.npmjs.com/package/@n8n/node-cli).
-
-### 7. Lint Your Code
-
-Check for errors:
-
-```bash
+```sh
+npm ci --ignore-scripts
 npm run lint
+npm test
+npm run dev
 ```
 
-Auto-fix issues when possible:
+There are no runtime dependencies beyond the n8n workflow peer dependency. Tests exercise the compiled node, request bodies, multipart binary preservation, pagination, downloads, failure handling and item pairing with mocked API transport. They do not claim a real eID signature or production end-to-end acceptance.
 
-```bash
-npm run lint:fix
-```
+GitHub Actions builds and tests the package and publishes tagged releases with npm provenance. Publishing requires npm owner access and either an initial publishing credential or an established trusted publisher. See [RELEASING.md](RELEASING.md).
 
-### 8. Build for Production
+## Support and license
 
-When ready to publish:
+[API documentation](https://sign-api.tvarka.pro/docs) · [TVARKA](https://tvarka.pro) · [Issues](https://github.com/mkiskis/n8n-nodes-tvarka-sign/issues) · info@tvarka.pro
 
-```bash
-npm run build
-```
-
-This compiles your TypeScript code to the `dist/` folder.
-
-### 9. Prepare for Publishing
-
-Before publishing:
-
-1. **Update documentation**: Replace this README with your node's documentation. Use [README_TEMPLATE.md](README_TEMPLATE.md) as a starting point.
-2. **Update the LICENSE**: Add your details to the [LICENSE](LICENSE.md) file.
-3. **Test thoroughly**: Ensure your node works in different scenarios.
-
-### 10. Publish to npm
-
-Publishing is handled automatically by the included GitHub Actions workflow ([.github/workflows/publish.yml](.github/workflows/publish.yml)). It runs on every version tag push and publishes to npm with a provenance attestation — a requirement for n8n community nodes starting May 1, 2026.
-
-#### One-time setup
-
-Configure npm to trust this repository's GitHub Actions workflow so it can publish on your behalf. Log in to [npmjs.com](https://npmjs.com), open your package settings, and under **Publish access → Trusted Publishers** add a publisher with:
-
-- **Repository owner**: your GitHub username or org
-- **Repository name**: your repo name
-- **Workflow name**: `publish.yml`
-
-No token or secret needs to be stored in GitHub — the workflow uses GitHub's OIDC token instead.
-
-> [!NOTE]
-> If you prefer a traditional npm token, create a Granular Access Token on npmjs.com and store it as `NPM_TOKEN` in your repository's Actions secrets. See the comments at the top of `.github/workflows/publish.yml` for details.
-
-#### Releasing a new version
-
-```bash
-npm run release
-```
-
-This lints, builds, prompts for a version bump, updates the changelog, commits, tags, and pushes — which triggers the workflow to publish to npm.
-
-### 11. Submit for Verification (Optional)
-
-Get your node verified for n8n Cloud:
-
-1. Ensure your node meets the [requirements](https://docs.n8n.io/integrations/creating-nodes/deploy/submit-community-nodes/):
-   - Uses MIT license ✅ (included in this starter)
-   - No external package dependencies
-   - Follows n8n's design guidelines
-   - Passes quality and security review
-
-2. Submit through the [n8n Creator Portal](https://creators.n8n.io/nodes)
-
-**Benefits of verification:**
-
-- Available directly in n8n Cloud
-- Discoverable in the n8n nodes panel
-- Verified badge for quality assurance
-- Increased visibility in the n8n community
-
-## Available Scripts
-
-This starter includes several npm scripts to streamline development:
-
-| Script                | Description                                                                 |
-| --------------------- | --------------------------------------------------------------------------- |
-| `npm run dev`         | Start n8n with your node and watch for changes (runs `n8n-node dev`)        |
-| `npm run build`       | Compile TypeScript to JavaScript for production (runs `n8n-node build`)     |
-| `npm run build:watch` | Build in watch mode (auto-rebuild on changes)                               |
-| `npm run lint`        | Check your code for errors and style issues (runs `n8n-node lint`)          |
-| `npm run lint:fix`    | Automatically fix linting issues when possible (runs `n8n-node lint --fix`) |
-| `npm run release`     | Create a new release (runs `n8n-node release`)                              |
-
-> [!TIP]
-> These scripts use the [@n8n/node-cli](https://www.npmjs.com/package/@n8n/node-cli) under the hood. You can also run CLI commands directly, e.g., `npx n8n-node dev`.
-
-## Troubleshooting
-
-### My node doesn't appear in n8n
-
-1. Make sure you ran `npm install` to install dependencies
-2. Check that your node is listed in `package.json` under `n8n.nodes`
-3. Restart the dev server with `npm run dev`
-4. Check the console for any error messages
-
-### Linting errors
-
-Run `npm run lint:fix` to automatically fix most common issues. For remaining errors, check the [n8n node development guidelines](https://docs.n8n.io/integrations/creating-nodes/).
-
-### TypeScript errors
-
-Make sure you're using Node.js v22 or higher and have run `npm install` to get all type definitions.
-
-## Resources
-
-- **[n8n Node Documentation](https://docs.n8n.io/integrations/creating-nodes/)** - Complete guide to building nodes
-- **[n8n Community Forum](https://community.n8n.io/)** - Get help and share your nodes
-- **[@n8n/node-cli Documentation](https://www.npmjs.com/package/@n8n/node-cli)** - CLI tool reference
-- **[n8n Creator Portal](https://creators.n8n.io/nodes)** - Submit your node for verification
-- **[Submit Community Nodes Guide](https://docs.n8n.io/integrations/creating-nodes/deploy/submit-community-nodes/)** - Verification requirements and process
-
-## Contributing
-
-Have suggestions for improving this starter? [Open an issue](https://github.com/n8n-io/n8n-nodes-starter/issues) or submit a pull request!
-
-## License
-
-[MIT](https://github.com/n8n-io/n8n-nodes-starter/blob/master/LICENSE.md)
+MIT. The license applies to this connector; use of the TVARKA service is governed by TVARKA's terms.
